@@ -1,4 +1,4 @@
-![Steen POE Marketer](https://img.shields.io/badge/Steen_POE_Marketer-v2.0.0-gold?style=flat-square&logo=python&logoColor=white)
+![Steen POE Marketer](https://img.shields.io/badge/Steen_POE_Marketer-v3.0.0-gold?style=flat-square&logo=python&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python)
 ![Platform](https://img.shields.io/badge/Platform-macOS_%7C_Linux_%7C_Windows-lightgrey?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
@@ -20,7 +20,43 @@
   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝
 ```
 
-**Path of Exile market analysis in your terminal.** 10 modules covering currency arbitrage, divination cards, gem flipping, economy snapshots, stash pricing, bulk calculation, watchlists, top movers, and item search — all powered by [poe.ninja](https://poe.ninja). No login required for any feature. Export everything to CSV, JSON, or HTML.
+**Path of Exile market analysis in your terminal.** 10 modules covering currency arbitrage, divination cards, gem flipping, economy snapshots, stash pricing, bulk calculation, watchlists, top movers, and item search — all powered by [poe.ninja](https://poe.ninja). No login required. Tab autocomplete on every input. Export to CSV, JSON, or HTML.
+
+---
+
+## Terminal preview
+
+```
+╭──────────────────── Main Menu ─ League: Settlers ──────────────────────╮
+│  ⚡ Market Pulse — Settlers                                              │
+│  Divine Orb  145.2c  ▲ +2.3%  │  Exalted Orb  2.1c  ─  │  Mirror  47k │
+╰─────────────────────────────────────────────────────────────────────────╯
+
+  1  ⚖  Currency Analysis    Buy/sell spreads · discount flags
+  2  🔄  Arbitrage Finder    Round-number margins · 🔥 hot picks
+  3  🃏  Divination Cards    Set costs · rewards · trend
+  4  💎  Gem Flipper         Base→max margins · ROI
+  5  📊  Economy Overview    Top items across 8 categories
+  6  🏦  Stash Pricer        Price your tab items
+  7  🧮  Bulk Calculator     Value stacks (40 div, 200c …)
+  8  👁  Watchlist (3)       Track items · price deltas
+  9  📈  Top Movers          Biggest gainers & losers (7d)
+  10 🔍  Item Search         Fuzzy search all categories
+
+  ↑/↓  history  ·  Tab  complete  ·  Ctrl+C  cancel
+
+Select: _
+```
+
+```
+┌─────────────────── 🔍 Item Search ─────────────────────┐
+│ Search: head█                                           │
+│ ┌─────────────────────────────────────────────────────┐ │
+│ │ Headhunter                  Unique Armour            │ │
+│ │ Head Hunter Deerstalker     Unique Armour            │ │
+│ └─────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -30,20 +66,44 @@
 # macOS / Linux
 chmod +x setup.sh && ./setup.sh
 
-# Windows
-python setup.bat
-
-# Or directly with Python
+# Or directly with Python 3.9+
 python3 steen_poe.py
 
 # Jump straight to a league
 python3 steen_poe.py --league "Settlers"
 
-# Search for an item immediately
+# Search immediately without the menu
 python3 steen_poe.py --search "Headhunter"
 ```
 
-Dependencies (`rich`, `requests`) are auto-installed on first run if missing.
+All three dependencies install automatically on first run.
+
+---
+
+## Tab autocomplete
+
+Every input field supports **Tab** for autocomplete and **↑/↓** to recall history.
+
+| Where | What completes |
+|---|---|
+| **Main menu** | `1`–`10`, `L`, `W`, `S`, `H`, `Q` |
+| **Item Search** | All item names (fuzzy — type `head` → `Headhunter`) |
+| **Stash Pricer** | All item names |
+| **Watchlist Add** | All item names |
+| **Bulk Calculator** | Currency aliases (`div`, `ex`, `c`, `mir` …) + full names |
+| **League Select** | League names |
+| **Export** | `csv`, `json`, `html` |
+
+**Controls inside any prompt:**
+
+| Key | Action |
+|---|---|
+| `Tab` | Show / cycle completions |
+| `↑` / `↓` | Scroll through input history |
+| `→` | Accept the current suggestion |
+| `Ctrl+C` | Cancel the current input / go back |
+
+> Completions are sourced from the disk cache. Run any module once to populate them — after that every subsequent session has full suggestions without waiting.
 
 ---
 
@@ -54,34 +114,45 @@ Dependencies (`rich`, `requests`) are auto-installed on first run if missing.
 | `--league NAME` | `-l` | Start with this league, skip the selection prompt |
 | `--search QUERY` | `-s` | Jump straight to Item Search with this query |
 | `--version` | | Print version and exit |
-| `--help` | `-h` | Show help and exit |
+| `--help` | `-h` | Show built-in help |
 
 ---
 
 ## The 10 modules
 
 ### 1 — Currency Analysis ⚖
-Live buy/sell spreads for every currency on poe.ninja. Shows the chaos equivalent value, the discount vs. median price, and a ▲/▼/─ 7-day trend arrow for each item. Sorted by value descending. Export-ready.
+Live buy/sell spreads for every currency on poe.ninja. Shows chaos equivalent, discount vs median, and ▲/▼/─ 7-day trend. Items marked **★** are trading below the median — a potential buy opportunity.
 
 ### 2 — Arbitrage Finder 🔄
-Finds profitable round-number trades between currency pairs. Uses `chaosEquivalent` as a common denominator and computes the nearest whole-number exchange ratio for each pair, then surfaces the pairs where the round-number rate is meaningfully better than the exact rate. Focus on trades with the highest margin percentage.
+Finds profitable round-number trades between currency pairs. Surfaces pairs where the nearest whole-number exchange ratio gives a better deal than the exact ninja rate. Items marked **🔥** have >10% margin.
 
 ### 3 — Divination Cards 🃏
-Lists all divination cards with their set cost (in chaos), reward description, stack size, and 7-day trend. Prompts for a minimum set cost filter so you can focus on the cards worth trading. High-value cards are highlighted in gold.
+All divination cards with set cost (in chaos), reward description, stack size, and 7-day trend. Filter by minimum set cost. Cards worth ≥100c are highlighted in gold.
 
 ### 4 — Gem Flipper 💎
-Shows the profit margin between buying a base gem and selling it at max level (20) or max quality (20%). Displays base cost, max cost, profit in chaos, and ROI percentage. Prompts for a minimum profit threshold (default: 5c) to cut noise. Gems with negative margins are hidden.
+Profit margin between a base gem and its max level (20) / quality (20%) version. Filter by minimum profit. Shows ROI %, highlighted green (>100% ROI) or bright green (massive flip).
 
 ### 5 — Economy Overview 📊
-A top-10 snapshot across every tracked item category: Currency, Divination Cards, Unique Weapons, Unique Armours, Unique Accessories, Unique Flasks, Unique Jewels, and Skill Gems. Each section shows value and 7-day trend. Good for a fast meta read.
+Top-10 snapshot across 8 categories: Currency, Divination Cards, Unique Weapons, Unique Armours, Unique Accessories, Skill Gems, Unique Flasks, Unique Jewels.
 
 ### 6 — Stash Pricer 🏦
-Type your item names one at a time (or paste a list). Searches all categories for each name and returns the chaos value. Totals everything up. Type `done` when finished. Great for pricing tabs before listing them.
+Enter item names one at a time. Fuzzy-matches against the full poe.ninja database. Shows price per item and a grand total.
 
 ### 7 — Bulk Calculator 🧮
-Enter stacks of currency using shorthand aliases (e.g. `40 div`, `200 chaos`) and get the total chaos value. Supports entering multiple items separated by commas or one per line. Useful for large trades or comparing stash tab offers.
+Enter stacks using shorthand aliases (e.g. `40 div`, `200 chaos`) to get the total value in both chaos and divine. Accepts one entry per line; empty line or `done` to calculate.
 
-**Currency shortcuts:**
+### 8 — Watchlist 👁
+Track any items across sessions. Each time you open the watchlist it shows the current price alongside the last-seen price and the delta — green for gains, red for losses.
+
+### 9 — Top Movers 📈
+Scans every category for the biggest % gainers and losers over the last 7 days. Good for spotting early meta shifts before the price peaks.
+
+### 10 — Item Search 🔍
+Fuzzy search by partial name across all categories simultaneously. Ranked by price. Also accessible directly via `--search` on the command line.
+
+---
+
+## Bulk calculator shortcuts
 
 | Alias | Full name |
 |---|---|
@@ -101,53 +172,35 @@ Enter stacks of currency using shorthand aliases (e.g. `40 div`, `200 chaos`) an
 | `blessed` | Blessed Orb |
 | `scour` | Orb of Scouring |
 | `regret` | Orb of Regret |
-| `augment` | Orb of Augmentation |
-| `transmute` | Orb of Transmutation |
-| `whetstone` | Blacksmith's Whetstone |
-| `armourer` | Armourer's Scrap |
-| `bauble` | Glassblower's Bauble |
 | `chisel` | Cartographer's Chisel |
 
 Any name not in this list is looked up by its full name (case-insensitive).
 
-### 8 — Watchlist 👁
-Track specific items and see their price change since you last checked. Add items by name (partial match accepted), remove them individually, or clear the entire list. The watchlist is saved to disk and persists between sessions. Price deltas show green for gains, red for losses.
-
-### 9 — Top Movers 📈📉
-Scans every tracked category and surfaces the biggest percentage gainers and losers over the last 7 days. Useful for spotting early meta shifts and spec-into opportunities before they peak.
-
-### 10 — Item Search 🔍
-Fuzzy-search by partial name across all categories simultaneously. Returns every match with its chaos value, category, and trend. Can also be used directly from the command line with `--search`.
-
 ---
 
-## Menu navigation
+## Reading the data
 
-From the main menu, type the number of the module you want, or one of these shortcuts:
-
-| Key | Action |
+| Symbol | Meaning |
 |---|---|
-| `1`–`10` | Open that module |
-| `L` | Change the active league |
-| `W` | Add / remove / clear watchlist items |
-| `S` | Settings (auth, cache, league) |
-| `H` | Help |
-| `Q` | Quit |
-| `Ctrl+C` | Quit from anywhere |
+| `▲ +X.X%` | Price rising over 7 days |
+| `▼ −X.X%` | Price falling over 7 days |
+| `─ 0.0%` | Stable price |
+| `★` | Buying below median — opportunity |
+| `🔥` | Arbitrage margin >10% |
+| `c` | Chaos Orb |
+| `div` | Divine Orb |
+| `k` / `M` | Thousands / millions |
 
----
+**Column guide:**
 
-## Export formats
-
-After every module that returns data, you are asked whether you want to export. Options:
-
-| Format | What you get |
-|---|---|
-| **CSV** | Flat spreadsheet, opens in Excel / Google Sheets |
-| **JSON** | Full structured data with metadata header |
-| **HTML** | Styled table with app name, league, and timestamp — ready to share |
-
-Files are saved to the current working directory with a timestamped filename, e.g. `currency_analysis_20260503_142233.csv`.
+| Column | Module | Meaning |
+|---|---|---|
+| Spread | Currency | Buy/sell gap — lower = more liquid |
+| Discount | Currency | vs median — negative = bargain |
+| Margin | Arbitrage | Profit % from round-number trade |
+| Set Cost | Div Cards | Full card set value in chaos |
+| ROI | Gem Flipper | Profit as % of base cost |
+| Delta | Watchlist | Price change since last check |
 
 ---
 
@@ -155,20 +208,16 @@ Files are saved to the current working directory with a timestamped filename, e.
 
 POESESSID is **completely optional**. All 10 modules work without it — poe.ninja is a public API.
 
-POESESSID is only used for requests to `api.pathofexile.com` (e.g., league enumeration via your account). Without it, leagues are fetched from a poe.ninja fallback list.
+POESESSID is only used for `api.pathofexile.com` requests (league enumeration). Without it, leagues come from a poe.ninja fallback list.
 
 **To find your POESESSID:**
-
 1. Log in at [pathofexile.com](https://www.pathofexile.com)
-2. Open browser DevTools → Application → Cookies → `www.pathofexile.com`
-3. Copy the value of the `POESESSID` cookie
+2. Open DevTools → `F12` → Application → Cookies
+3. Copy the value next to `POESESSID`
 
-**To add it to Steen POE Marketer:**
+**To add it:** run the app → press `S` for Settings → option `1`.
 
-- Run the app → press `S` for Settings → `Auth`
-- Or paste it when prompted on first run
-
-The session ID is stored in `~/.steen_poe/config.json`. It is never sent to poe.ninja — only to GGG's official API.
+Stored in `~/.steen_poe/config.json`. Never sent to poe.ninja — only to GGG's official API.
 
 ---
 
@@ -176,28 +225,21 @@ The session ID is stored in `~/.steen_poe/config.json`. It is never sent to poe.
 
 | Path | Contents |
 |---|---|
-| `~/.steen_poe/config.json` | League preference, POESESSID, watchlist, last-seen watchlist prices |
-| `~/.steen_poe/cache/` | Cached poe.ninja responses (JSON, one file per endpoint) |
+| `~/.steen_poe/config.json` | League, POESESSID, watchlist, last-seen prices |
+| `~/.steen_poe/cache/` | poe.ninja responses (15-min TTL, one file per endpoint) |
 
-Cache TTL is **15 minutes**. The main menu shows the age of the current Divine Orb price snapshot so you always know how fresh the data is. To force a fresh fetch, use Settings → Clear Cache.
-
----
-
-## Rate limits and fair use
-
-- poe.ninja does not publish a formal rate limit, but the app caches all responses for 15 minutes to avoid hammering the API.
-- Requests include a `User-Agent` header identifying this tool (`SteenPOEMarketer/2.0.0`).
-- Do not disable or lower the cache TTL in production use.
+The Market Pulse panel in the main menu shows cache age so you always know how fresh the data is. Clear the cache via `S → Settings → 2`.
 
 ---
 
 ## Requirements
 
-- Python 3.9 or later
+- Python 3.9+
 - `rich >= 13.7.0`
 - `requests >= 2.31.0`
+- `prompt_toolkit >= 3.0.0`
 
-Both dependencies are installed automatically on first run. Or install manually:
+All installed automatically on first run, or manually:
 
 ```bash
 pip install -r requirements.txt
@@ -207,12 +249,10 @@ pip install -r requirements.txt
 
 ## Disclaimer
 
-Steen POE Marketer is an independent community tool. It is not affiliated with or endorsed by Grinding Gear Games. All market data is sourced from [poe.ninja](https://poe.ninja). Prices are estimates — actual trade prices may differ. This tool does not automate trades or interact with the game client.
+Independent community tool. Not affiliated with or endorsed by Grinding Gear Games. All market data from [poe.ninja](https://poe.ninja). Prices are estimates — actual trade prices may differ. This tool does not automate trades or interact with the game client.
 
 ---
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE) for details.
-
-Built by Tony · [github.com/hardlygospel](https://github.com/hardlygospel)
+MIT — built by Tony · [github.com/hardlygospel](https://github.com/hardlygospel)

@@ -11,7 +11,6 @@ import csv
 import json
 import re
 import sys
-import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,14 +36,15 @@ def _pip_install(packages: list[str]) -> None:
 
 def _ensure_deps() -> None:
     missing = []
-    try:
-        import rich      # noqa: F401
-    except ImportError:
-        missing.append("rich>=13.7.0")
-    try:
-        import requests  # noqa: F401
-    except ImportError:
-        missing.append("requests>=2.31.0")
+    for pkg, mod in [
+        ("rich>=13.7.0",          "rich"),
+        ("requests>=2.31.0",      "requests"),
+        ("prompt_toolkit>=3.0.0", "prompt_toolkit"),
+    ]:
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
     if missing:
         print(f"Installing: {', '.join(missing)} …")
         _pip_install(missing)
@@ -52,24 +52,33 @@ def _ensure_deps() -> None:
 
 _ensure_deps()
 
-import requests                                                        # noqa: E402
-from rich import box                                                   # noqa: E402
-from rich.columns import Columns                                       # noqa: E402
-from rich.console import Console                                       # noqa: E402
-from rich.markdown import Markdown                                     # noqa: E402
-from rich.padding import Padding                                       # noqa: E402
-from rich.panel import Panel                                           # noqa: E402
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn  # noqa: E402
-from rich.prompt import Confirm, Prompt                                # noqa: E402
-from rich.rule import Rule                                             # noqa: E402
-from rich.table import Table                                           # noqa: E402
-from rich.text import Text                                             # noqa: E402
+import requests                                                              # noqa: E402
+from rich import box                                                         # noqa: E402
+from rich.columns import Columns                                             # noqa: E402
+from rich.console import Console                                             # noqa: E402
+from rich.markdown import Markdown                                           # noqa: E402
+from rich.padding import Padding                                             # noqa: E402
+from rich.panel import Panel                                                 # noqa: E402
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn    # noqa: E402
+from rich.prompt import Confirm                                              # noqa: E402
+from rich.rule import Rule                                                   # noqa: E402
+from rich.table import Table                                                 # noqa: E402
+from rich.text import Text                                                   # noqa: E402
+
+try:
+    from prompt_toolkit import prompt as _pt_prompt
+    from prompt_toolkit.completion import FuzzyWordCompleter, WordCompleter
+    from prompt_toolkit.history import InMemoryHistory
+    from prompt_toolkit.styles import Style as PtStyle
+    _HAS_PT = True
+except ImportError:
+    _HAS_PT = False
 
 console = Console()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-APP_VERSION   = "2.0.0"
+APP_VERSION   = "3.0.0"
 APP_NAME      = "Steen POE Marketer"
 POE_NINJA_API = "https://poe.ninja/api/data"
 POE_API       = "https://api.pathofexile.com"
@@ -78,6 +87,127 @@ CONFIG_FILE   = CONFIG_DIR / "config.json"
 CACHE_DIR     = CONFIG_DIR / "cache"
 CACHE_TTL     = 15   # minutes
 USER_AGENT    = f"SteenPOEMarketer/{APP_VERSION} (github.com/hardlygospel)"
+
+_PT_STYLE = None
+if _HAS_PT:
+    _PT_STYLE = PtStyle.from_dict({
+        "prompt":                                  "bold #00d7ff",
+        "":                                        "#c1c2c5",
+        "placeholder":                             "#5c5f66 italic",
+        "completion-menu":                         "bg:#1e1e2e #cdd6f4",
+        "completion-menu.completion":              "bg:#1e1e2e #cdd6f4",
+        "completion-menu.completion.current":      "bg:#89b4fa #1e1e2e bold",
+        "completion-menu.meta.completion":         "bg:#181825 #6c7086",
+        "completion-menu.meta.completion.current": "bg:#74c7ec #1e1e2e",
+        "scrollbar.background":                    "bg:#313244",
+        "scrollbar.button":                        "bg:#585b70",
+    })
+
+_HISTORIES: dict[str, "InMemoryHistory"] = {}
+
+
+def _history(key: str) -> "Optional[InMemoryHistory]":
+    if not _HAS_PT:
+        return None
+    if key not in _HISTORIES:
+        _HISTORIES[key] = InMemoryHistory()
+    return _HISTORIES[key]
+
+
+# ── Unified input wrapper ─────────────────────────────────────────────────────
+
+def pt_ask(label: str, *, completer=None, default: str = "",
+           placeholder: str = "", history_key: str = "default") -> str:
+    """Single input entry point — prompt_toolkit with fallback to stdlib input."""
+    plain = re.sub(r'\[/?[^\]]*\]', '', label).strip(": ").strip()
+    prompt_str = f"{plain}: "
+    if _HAS_PT:
+        try:
+            result = _pt_prompt(
+                prompt_str,
+                completer=completer,
+                complete_while_typing=True,
+                style=_PT_STYLE,
+                default=default,
+                history=_history(history_key),
+            )
+            return (result or "").strip()
+        except (KeyboardInterrupt, EOFError):
+            raise
+        except Exception:
+            pass
+    # stdlib fallback
+    try:
+        if default:
+            result = input(f"{prompt_str}[{default}] ").strip()
+            return result or default
+        return input(prompt_str).strip()
+    except (KeyboardInterrupt, EOFError):
+        raise
+
+
+# ── Completers ────────────────────────────────────────────────────────────────
+
+ECONOMY_CATEGORIES = [
+    ("Currency",        "currencyoverview", "Currency",        "currencyTypeName"),
+    ("Divination Card", "itemoverview",     "DivinationCard",  "name"),
+    ("Unique Weapon",   "itemoverview",     "UniqueWeapon",    "name"),
+    ("Unique Armour",   "itemoverview",     "UniqueArmour",    "name"),
+    ("Unique Accessory","itemoverview",     "UniqueAccessory", "name"),
+    ("Skill Gem",       "itemoverview",     "SkillGem",        "name"),
+    ("Unique Flask",    "itemoverview",     "UniqueFlask",     "name"),
+    ("Unique Jewel",    "itemoverview",     "UniqueJewel",     "name"),
+]
+
+
+def _get_cached_item_names(league: str) -> list[str]:
+    """Return all item names from disk cache — no network call."""
+    names: list[str] = []
+    for _, endpoint, type_, nk in ECONOMY_CATEGORIES:
+        key    = f"ninja_{league}_{endpoint}_{type_}"
+        cached = cache_get(key)
+        if cached:
+            for item in cached:
+                n = item.get(nk, "")
+                if n:
+                    names.append(n)
+    return sorted(set(names))
+
+
+def _item_completer(league: str) -> "Optional[FuzzyWordCompleter]":
+    if not _HAS_PT:
+        return None
+    names = _get_cached_item_names(league)
+    return FuzzyWordCompleter(names) if names else None
+
+
+def _currency_completer(price_map: dict) -> "Optional[FuzzyWordCompleter]":
+    if not _HAS_PT:
+        return None
+    words = sorted(set(list(_BULK_ALIASES.keys()) + list(price_map.keys())))
+    return FuzzyWordCompleter(words)
+
+
+def _menu_completer() -> "Optional[WordCompleter]":
+    if not _HAS_PT:
+        return None
+    return WordCompleter(
+        ["1","2","3","4","5","6","7","8","9","10","l","w","s","h","q"],
+        ignore_case=True,
+    )
+
+
+def _league_completer(leagues: list[str]) -> "Optional[WordCompleter]":
+    if not _HAS_PT:
+        return None
+    nums = [str(i) for i in range(1, len(leagues) + 1)]
+    return WordCompleter(leagues + nums, ignore_case=True)
+
+
+def _format_completer() -> "Optional[WordCompleter]":
+    if not _HAS_PT:
+        return None
+    return WordCompleter(["csv", "json", "html"])
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -142,7 +272,10 @@ def cache_age(key: str) -> Optional[str]:
         d    = json.loads(p.read_text(encoding="utf-8"))
         age  = datetime.now() - datetime.fromisoformat(d["at"])
         mins = int(age.total_seconds() / 60)
-        return f"{mins}m ago" if mins > 0 else "just now"
+        secs = int(age.total_seconds() % 60)
+        if mins == 0:
+            return f"{secs}s ago"
+        return f"{mins}m ago"
     except Exception:
         return None
 
@@ -170,9 +303,11 @@ def _get(url: str, cfg: dict, params: dict | None = None) -> Optional[dict]:
 
 def check_ninja_online() -> bool:
     try:
-        r = requests.get(f"{POE_NINJA_API}/currencyoverview",
-                         params={"league": "Standard", "type": "Currency"},
-                         timeout=5)
+        r = requests.get(
+            f"{POE_NINJA_API}/currencyoverview",
+            params={"league": "Standard", "type": "Currency"},
+            timeout=5,
+        )
         return r.status_code == 200
     except Exception:
         return False
@@ -185,7 +320,7 @@ def ninja_fetch(league: str, endpoint: str, type_: str, cfg: dict) -> list[dict]
     cached = cache_get(key)
     if cached is not None:
         return cached
-    data = _get(f"{POE_NINJA_API}/{endpoint}", cfg, {"league": league, "type": type_})
+    data  = _get(f"{POE_NINJA_API}/{endpoint}", cfg, {"league": league, "type": type_})
     lines = (data or {}).get("lines", [])
     if lines:
         cache_set(key, lines)
@@ -230,11 +365,19 @@ def _trend(v: float) -> str:
 
 
 def _trend_cell(v: float) -> Text:
-    if v > 10:  style = "bold bright_green"
-    elif v > 0:  style = "green"
+    if v > 10:    style = "bold bright_green"
+    elif v > 0:   style = "green"
     elif v > -10: style = "yellow"
     else:         style = "red"
     return Text(f"{_trend(v)} {v:+.1f}%", style=style)
+
+
+def _trend_markup(v: float) -> str:
+    if v > 10:    s = "bold bright_green"
+    elif v > 0:   s = "green"
+    elif v > -10: s = "yellow"
+    else:         s = "red"
+    return f"[{s}]{_trend(v)} {v:+.1f}%[/{s}]"
 
 
 # ── Module 1 — Currency Analysis ─────────────────────────────────────────────
@@ -253,7 +396,7 @@ def run_currency_analysis(league: str, cfg: dict) -> list[dict]:
         sell    = float(pay.get("value")     or median)
         if buy  <= 0: buy  = median
         if sell <= 0: sell = median
-        spread   = (buy - sell) / buy    * 100 if buy   > 0 else 0
+        spread   = (buy - sell) / buy     * 100 if buy    > 0 else 0
         discount = (buy - median) / median * 100 if median > 0 else 0
         out.append({
             "name":         name,
@@ -280,8 +423,7 @@ def run_arbitrage(league: str, cfg: dict) -> list[dict]:
             cmap[n] = v
 
     results = []
-    pairs = [(n, v) for n, v in cmap.items() if n != "Chaos Orb" and v >= 2.0]
-
+    pairs   = [(n, v) for n, v in cmap.items() if n != "Chaos Orb" and v >= 2.0]
     for i, (a, av) in enumerate(pairs):
         for b, bv in pairs[i + 1:]:
             ratio = av / bv
@@ -299,13 +441,12 @@ def run_arbitrage(league: str, cfg: dict) -> list[dict]:
                 continue
             results.append({
                 "pair":       f"{a} → {b}" if best_pct > 0 else f"{b} → {a}",
-                "a_name":     a, "b_name": b,
-                "a_val":      round(av, 1), "b_val": round(bv, 1),
+                "a_name": a, "b_name": b,
+                "a_val":  round(av, 1), "b_val": round(bv, 1),
                 "exact":      round(ratio, 2),
                 "trade_at":   trade_at,
                 "margin_pct": round(abs(best_pct), 2),
             })
-
     results.sort(key=lambda x: x["margin_pct"], reverse=True)
     return results[:30]
 
@@ -316,15 +457,15 @@ def run_div_cards(league: str, cfg: dict, min_set_cost: float = 0) -> list[dict]
     lines = ninja_fetch(league, "itemoverview", "DivinationCard", cfg)
     out   = []
     for item in lines:
-        price   = _cv(item)
+        price = _cv(item)
         if price < 0.1:
             continue
-        stack   = int(item.get("stackSize") or 1)
-        set_c   = price * stack
+        stack = int(item.get("stackSize") or 1)
+        set_c = price * stack
         if set_c < min_set_cost:
             continue
-        expl    = item.get("explicitModifiers") or []
-        reward  = expl[0].get("text", "—")[:70] if expl else "—"
+        expl   = item.get("explicitModifiers") or []
+        reward = expl[0].get("text", "—")[:70] if expl else "—"
         out.append({
             "name":      item.get("name", ""),
             "stack":     stack,
@@ -382,18 +523,6 @@ def run_gem_flipper(league: str, cfg: dict, min_profit: float = 5) -> list[dict]
 
 # ── Module 5 — Economy Overview ───────────────────────────────────────────────
 
-ECONOMY_CATEGORIES = [
-    ("Currency",        "currencyoverview", "Currency",        "currencyTypeName"),
-    ("Divination Card", "itemoverview",     "DivinationCard",  "name"),
-    ("Unique Weapon",   "itemoverview",     "UniqueWeapon",    "name"),
-    ("Unique Armour",   "itemoverview",     "UniqueArmour",    "name"),
-    ("Unique Accessory","itemoverview",     "UniqueAccessory", "name"),
-    ("Skill Gem",       "itemoverview",     "SkillGem",        "name"),
-    ("Unique Flask",    "itemoverview",     "UniqueFlask",     "name"),
-    ("Unique Jewel",    "itemoverview",     "UniqueJewel",     "name"),
-]
-
-
 def run_economy_overview(league: str, cfg: dict) -> dict:
     overview = {}
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
@@ -405,8 +534,8 @@ def run_economy_overview(league: str, cfg: dict) -> dict:
             if lines:
                 overview[cat] = {
                     "top_value": sorted(lines, key=_cv, reverse=True)[:6],
-                    "top_gain":  sorted(lines, key=_change, reverse=True)[:5],
-                    "top_loss":  sorted(lines, key=_change)[:5],
+                    "top_gain":  sorted(lines, key=_change, reverse=True)[:3],
+                    "top_loss":  sorted(lines, key=_change)[:3],
                     "count":     len(lines),
                     "name_key":  nk,
                 }
@@ -432,15 +561,21 @@ def _build_lookup(league: str, cfg: dict) -> dict[str, float]:
 
 
 def run_stash_pricer(league: str, cfg: dict) -> list[dict]:
+    console.print()
+    console.print(Rule("[bold green]🏦  Stash Tab Pricer[/bold green]", style="green"))
     console.print(
-        "\n[bold cyan]Stash Tab Pricer[/bold cyan]\n"
-        "[dim]Enter item names one per line — type [bold]done[/bold] when finished.[/dim]\n"
+        "[dim]Type item names one per line. "
+        "Press [bold]Tab[/bold] for suggestions, "
+        "empty line or [bold]done[/bold] to finish.[/dim]\n"
     )
-    lookup = _build_lookup(league, cfg)
+    lookup   = _build_lookup(league, cfg)
+    completer = (
+        FuzzyWordCompleter(sorted(lookup.keys())) if _HAS_PT else None
+    )
     inputs: list[str] = []
     while True:
         try:
-            line = Prompt.ask("[bold bright_green]Item[/bold bright_green]").strip()
+            line = pt_ask("Item", completer=completer, history_key="stash")
         except (KeyboardInterrupt, EOFError):
             break
         if not line or line.lower() in ("done", "/done"):
@@ -456,7 +591,7 @@ def run_stash_pricer(league: str, cfg: dict) -> list[dict]:
             matches = [(n, v) for n, v in lookup.items() if key in n or n in key]
             if len(matches) == 1:
                 price = matches[0][1]
-                label = f"{raw} [dim](~{matches[0][0]})[/dim]"
+                label = f"{raw} (~{matches[0][0]})"
         results.append({"name": label, "price": price, "found": price is not None})
     return results
 
@@ -464,34 +599,34 @@ def run_stash_pricer(league: str, cfg: dict) -> list[dict]:
 # ── Module 7 — Bulk Calculator ────────────────────────────────────────────────
 
 _BULK_ALIASES: dict[str, str] = {
-    "div":     "Divine Orb",
-    "divine":  "Divine Orb",
-    "exalt":   "Exalted Orb",
-    "ex":      "Exalted Orb",
-    "chaos":   "Chaos Orb",
-    "c":       "Chaos Orb",
-    "mirror":  "Mirror of Kalandra",
-    "mir":     "Mirror of Kalandra",
-    "fusing":  "Orb of Fusing",
-    "fuse":    "Orb of Fusing",
-    "alt":     "Orb of Alteration",
-    "alch":    "Orb of Alchemy",
-    "regal":   "Regal Orb",
-    "annul":   "Orb of Annulment",
-    "vaal":    "Vaal Orb",
-    "chrome":  "Chromatic Orb",
-    "jeweller": "Jeweller's Orb",
-    "jew":     "Jeweller's Orb",
-    "gcp":     "Gemcutter's Prism",
-    "blessed": "Blessed Orb",
-    "scour":   "Orb of Scouring",
-    "regret":  "Orb of Regret",
-    "augment": "Orb of Augmentation",
+    "div":       "Divine Orb",
+    "divine":    "Divine Orb",
+    "exalt":     "Exalted Orb",
+    "ex":        "Exalted Orb",
+    "chaos":     "Chaos Orb",
+    "c":         "Chaos Orb",
+    "mirror":    "Mirror of Kalandra",
+    "mir":       "Mirror of Kalandra",
+    "fusing":    "Orb of Fusing",
+    "fuse":      "Orb of Fusing",
+    "alt":       "Orb of Alteration",
+    "alch":      "Orb of Alchemy",
+    "regal":     "Regal Orb",
+    "annul":     "Orb of Annulment",
+    "vaal":      "Vaal Orb",
+    "chrome":    "Chromatic Orb",
+    "jeweller":  "Jeweller's Orb",
+    "jew":       "Jeweller's Orb",
+    "gcp":       "Gemcutter's Prism",
+    "blessed":   "Blessed Orb",
+    "scour":     "Orb of Scouring",
+    "regret":    "Orb of Regret",
+    "augment":   "Orb of Augmentation",
     "transmute": "Orb of Transmutation",
     "whetstone": "Blacksmith's Whetstone",
-    "armourer": "Armourer's Scrap",
-    "bauble":  "Glassblower's Bauble",
-    "chisel":  "Cartographer's Chisel",
+    "armourer":  "Armourer's Scrap",
+    "bauble":    "Glassblower's Bauble",
+    "chisel":    "Cartographer's Chisel",
 }
 
 
@@ -501,11 +636,12 @@ def _resolve_currency_name(raw: str) -> str:
 
 
 def run_bulk_calculator(league: str, cfg: dict) -> list[dict]:
+    console.print()
+    console.print(Rule("[bold bright_cyan]🧮  Bulk Currency Calculator[/bold bright_cyan]", style="bright_cyan"))
     console.print(
-        "\n[bold cyan]Bulk Currency Calculator[/bold cyan]\n"
         "[dim]Enter amounts like [bold]40 divine[/bold] or [bold]200 chaos[/bold], "
-        "one per line. Type [bold]done[/bold] to calculate.[/dim]\n"
-        "[dim]Shortcuts: div, ex, c, mir, fuse, gcp, alch, alt, regal, annul, vaal …[/dim]\n"
+        "one per line. Press [bold]Tab[/bold] to complete currency names.\n"
+        "Empty line or [bold]done[/bold] to calculate.[/dim]\n"
     )
 
     lines_data = ninja_fetch(league, "currencyoverview", "Currency", cfg)
@@ -516,15 +652,16 @@ def run_bulk_calculator(league: str, cfg: dict) -> list[dict]:
         if name and val > 0:
             price_map[name] = val
 
+    completer = _currency_completer(price_map)
     entries: list[tuple[int, str]] = []
     while True:
         try:
-            line = Prompt.ask("[bold bright_green]Amount[/bold bright_green]").strip()
+            line = pt_ask("Amount", completer=completer,
+                          placeholder="e.g. 40 divine", history_key="bulk")
         except (KeyboardInterrupt, EOFError):
             break
         if not line or line.lower() in ("done", "/done"):
             break
-        # Parse "40 divine" or "40x divine" or "divine 40"
         m = re.match(r"^(\d+)[x\s]+(.+)$", line) or re.match(r"^(.+?)\s+(\d+)$", line)
         if m:
             try:
@@ -532,9 +669,9 @@ def run_bulk_calculator(league: str, cfg: dict) -> list[dict]:
                 name = m.group(2)      if m.group(1).isdigit() else m.group(1)
                 entries.append((qty, _resolve_currency_name(name)))
             except ValueError:
-                console.print(f"[red]Could not parse '{line}' — try '40 divine'[/red]")
+                console.print(f"[red]  Could not parse '{line}' — try '40 divine'[/red]")
         else:
-            console.print(f"[yellow]Format: '40 divine' or '200 chaos'[/yellow]")
+            console.print("[yellow]  Format: '40 divine' or '200 chaos'[/yellow]")
 
     divine_price = price_map.get("Divine Orb", 1.0)
     results = []
@@ -542,7 +679,6 @@ def run_bulk_calculator(league: str, cfg: dict) -> list[dict]:
         unit_price = price_map.get(name)
         found      = unit_price is not None
         if not found:
-            # Fuzzy match
             matches = [(n, v) for n, v in price_map.items()
                        if name.lower() in n.lower() or n.lower() in name.lower()]
             if len(matches) == 1:
@@ -551,12 +687,12 @@ def run_bulk_calculator(league: str, cfg: dict) -> list[dict]:
         total_chaos  = round(qty * (unit_price or 0), 1)
         total_divine = round(total_chaos / divine_price, 2) if divine_price else 0
         results.append({
-            "item":          name,
-            "qty":           qty,
-            "unit_price":    round(unit_price, 2) if unit_price else None,
-            "total_chaos":   total_chaos,
-            "total_divine":  total_divine,
-            "found":         found,
+            "item":         name,
+            "qty":          qty,
+            "unit_price":   round(unit_price, 2) if unit_price else None,
+            "total_chaos":  total_chaos,
+            "total_divine": total_divine,
+            "found":        found,
         })
     return results
 
@@ -567,10 +703,10 @@ def run_watchlist(league: str, cfg: dict) -> list[dict]:
     watchlist = load_watchlist(cfg)
     if not watchlist:
         return []
-    lookup = _build_lookup(league, cfg)
-    results = []
-    prev_prices: dict[str, float] = cfg.get("watchlist_prev", {})
-    new_prev: dict[str, float]    = {}
+    lookup          = _build_lookup(league, cfg)
+    prev_prices     = cfg.get("watchlist_prev", {})
+    new_prev: dict  = {}
+    results         = []
     for name in watchlist:
         key   = name.lower()
         price = lookup.get(key)
@@ -594,11 +730,11 @@ def run_watchlist(league: str, cfg: dict) -> list[dict]:
     return results
 
 
-def manage_watchlist(cfg: dict) -> dict:
+def manage_watchlist(cfg: dict, league: str = "") -> dict:
     while True:
         watchlist = load_watchlist(cfg)
         console.print()
-        console.print(Rule("[bold cyan]Watchlist Manager[/bold cyan]", style="cyan"))
+        console.print(Rule("[bold cyan]👁  Watchlist Manager[/bold cyan]", style="cyan"))
 
         if watchlist:
             t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
@@ -611,19 +747,23 @@ def manage_watchlist(cfg: dict) -> dict:
             console.print("[dim]  Watchlist is empty.[/dim]\n")
 
         console.print(
-            "[dim]  [bold]A[/bold] Add item  "
-            "[bold]R[/bold] Remove by number  "
-            "[bold]C[/bold] Clear all  "
-            "[bold]B[/bold] Back[/dim]"
+            "[dim]  [bold cyan]a[/bold cyan] Add  "
+            "[bold cyan]r[/bold cyan] Remove #  "
+            "[bold cyan]c[/bold cyan] Clear all  "
+            "[bold cyan]b[/bold cyan] Back[/dim]\n"
         )
+        option_c = WordCompleter(["a","r","c","b","add","remove","clear","back"],
+                                 ignore_case=True) if _HAS_PT else None
         try:
-            choice = Prompt.ask("[cyan]Option[/cyan]", default="b").strip().lower()
+            choice = pt_ask("Option", completer=option_c, default="b",
+                            history_key="wl_opt").lower()
         except (KeyboardInterrupt, EOFError):
             break
 
         if choice == "a":
+            completer = _item_completer(league) if league else None
             try:
-                name = Prompt.ask("[cyan]Item name[/cyan]").strip()
+                name = pt_ask("Item name", completer=completer, history_key="wl_add")
             except (KeyboardInterrupt, EOFError):
                 continue
             if name and name not in watchlist:
@@ -631,11 +771,11 @@ def manage_watchlist(cfg: dict) -> dict:
                 save_watchlist(cfg, watchlist)
                 console.print(f"[green]✓  Added '[yellow]{name}[/yellow]'.[/green]")
             elif name in watchlist:
-                console.print("[yellow]Already in watchlist.[/yellow]")
+                console.print("[yellow]  Already in watchlist.[/yellow]")
 
         elif choice == "r":
             try:
-                idx_str = Prompt.ask("[cyan]Remove #[/cyan]").strip()
+                idx_str = pt_ask("Remove #", history_key="wl_rm")
             except (KeyboardInterrupt, EOFError):
                 continue
             if idx_str.isdigit():
@@ -650,7 +790,7 @@ def manage_watchlist(cfg: dict) -> dict:
                 save_watchlist(cfg, [])
                 console.print("[green]✓  Watchlist cleared.[/green]")
 
-        elif choice in ("b", "back"):
+        elif choice in ("b", "back", ""):
             break
 
     return cfg
@@ -663,7 +803,7 @@ def run_top_movers(league: str, cfg: dict) -> dict:
     losers:  list[dict] = []
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   console=console, transient=True) as prog:
-        task = prog.add_task("Scanning all categories for movers…", total=len(ECONOMY_CATEGORIES))
+        task = prog.add_task("Scanning all categories…", total=len(ECONOMY_CATEGORIES))
         for cat, endpoint, type_, nk in ECONOMY_CATEGORIES:
             prog.update(task, description=f"Scanning {cat}…")
             for item in ninja_fetch(league, endpoint, type_, cfg):
@@ -691,8 +831,11 @@ def run_top_movers(league: str, cfg: dict) -> dict:
 
 def run_item_search(league: str, cfg: dict, query: str = "") -> list[dict]:
     if not query:
+        completer = _item_completer(league)
+        console.print()
         try:
-            query = Prompt.ask("[bold cyan]Search[/bold cyan]").strip()
+            query = pt_ask("Search", completer=completer,
+                           placeholder="e.g. Headhunter", history_key="search")
         except (KeyboardInterrupt, EOFError):
             return []
     if not query:
@@ -701,7 +844,7 @@ def run_item_search(league: str, cfg: dict, query: str = "") -> list[dict]:
     results = []
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   console=console, transient=True) as prog:
-        task = prog.add_task(f"Searching for '{query}'…")
+        task = prog.add_task(f"Searching '{query}'…")
         for cat, endpoint, type_, nk in ECONOMY_CATEGORIES:
             for item in ninja_fetch(league, endpoint, type_, cfg):
                 name = item.get(nk, "")
@@ -719,10 +862,16 @@ def run_item_search(league: str, cfg: dict, query: str = "") -> list[dict]:
 
 # ── Display helpers ───────────────────────────────────────────────────────────
 
+def _cache_footer(league: str, endpoint: str, type_: str) -> str:
+    age = cache_age(f"ninja_{league}_{endpoint}_{type_}")
+    return f"[dim]  data: {age or 'live'}  ·  poe.ninja[/dim]"
+
+
 def display_currency_analysis(data: list[dict], limit: int = 35) -> None:
     t = Table(
         title="⚖  Currency Analysis — Buy Opportunities",
         box=box.ROUNDED, border_style="cyan", title_style="bold cyan",
+        caption="[dim]Discount < 0% = buying below median = opportunity  ·  Spread < 5% = liquid market[/dim]",
     )
     t.add_column("#",        width=4,  justify="right", style="dim")
     t.add_column("Currency", min_width=22, style="bold yellow")
@@ -733,44 +882,46 @@ def display_currency_analysis(data: list[dict], limit: int = 35) -> None:
     t.add_column("Discount", width=10, justify="right")
     t.add_column("7d",       width=14, justify="right")
     for i, r in enumerate(data[:limit], 1):
-        sp_s = "green" if r["spread_pct"] < 5 else ("yellow" if r["spread_pct"] < 15 else "red")
-        dc_s = "bold bright_green" if r["discount_pct"] < -3 else (
-               "green" if r["discount_pct"] < 0 else "dim")
+        sp_s = "bold green" if r["spread_pct"] < 5 else (
+               "yellow"    if r["spread_pct"] < 15 else "red")
+        dc_s = "bold bright_green" if r["discount_pct"] < -5 else (
+               "green"             if r["discount_pct"] < 0  else "dim")
+        flag = " ★" if r["discount_pct"] < -5 else ""
         t.add_row(
-            str(i), r["name"],
+            str(i),
+            f"{r['name']}{flag}",
             f"{_fmt(r['median'])}c",
             f"{_fmt(r['buy'])}c",
             f"{_fmt(r['sell'])}c",
-            Text(f"{r['spread_pct']:.1f}%",    style=sp_s),
-            Text(f"{r['discount_pct']:+.1f}%",  style=dc_s),
+            Text(f"{r['spread_pct']:.1f}%",   style=sp_s),
+            Text(f"{r['discount_pct']:+.1f}%", style=dc_s),
             _trend_cell(r["change_7d"]),
         )
     console.print(Padding(t, (1, 0)))
-    console.print(
-        "[dim]Discount: negative = buying below median = opportunity. "
-        "Spread: tighter = more liquid market.[/dim]\n"
-    )
 
 
 def display_arbitrage(data: list[dict], limit: int = 20) -> None:
     if not data:
-        console.print("[yellow]No significant arbitrage found for this league.[/yellow]\n")
+        console.print("[yellow]  No significant arbitrage found.[/yellow]\n")
         return
     t = Table(
         title="🔄  Arbitrage — Round-Number Trade Margins",
         box=box.ROUNDED, border_style="magenta", title_style="bold magenta",
+        caption="[dim]Margin = value gained by trading at nearest whole-number ratio vs exact rate[/dim]",
     )
-    t.add_column("#",       width=4,  justify="right", style="dim")
-    t.add_column("Pair",    min_width=34, style="bold yellow")
-    t.add_column("Exact",   width=10, justify="right", style="dim white")
-    t.add_column("Trade At",width=10, justify="right", style="cyan")
-    t.add_column("A (c)",   width=10, justify="right", style="dim")
-    t.add_column("B (c)",   width=10, justify="right", style="dim")
-    t.add_column("Margin",  width=10, justify="right")
+    t.add_column("#",        width=4,  justify="right", style="dim")
+    t.add_column("Pair",     min_width=34, style="bold yellow")
+    t.add_column("Exact",    width=10, justify="right", style="dim white")
+    t.add_column("Trade At", width=10, justify="right", style="cyan")
+    t.add_column("A (c)",    width=10, justify="right", style="dim")
+    t.add_column("B (c)",    width=10, justify="right", style="dim")
+    t.add_column("Margin",   width=10, justify="right")
     for i, r in enumerate(data[:limit], 1):
-        ms = "bold bright_green" if r["margin_pct"] > 5 else "green"
+        ms = "bold bright_green" if r["margin_pct"] > 8 else "green"
+        hot = " 🔥" if r["margin_pct"] > 10 else ""
         t.add_row(
-            str(i), r["pair"],
+            str(i),
+            f"{r['pair']}{hot}",
             f"1 : {r['exact']}",
             f"1 : {r['trade_at']}",
             f"{_fmt(r['a_val'])}c",
@@ -778,10 +929,6 @@ def display_arbitrage(data: list[dict], limit: int = 20) -> None:
             Text(f"+{r['margin_pct']:.1f}%", style=ms),
         )
     console.print(Padding(t, (1, 0)))
-    console.print(
-        "[dim]Margin = value gained by trading at the nearest whole-number ratio "
-        "vs the exact ninja rate.[/dim]\n"
-    )
 
 
 def display_div_cards(data: list[dict], limit: int = 40) -> None:
@@ -793,15 +940,16 @@ def display_div_cards(data: list[dict], limit: int = 40) -> None:
     t.add_column("Card",   min_width=26, style="bold yellow")
     t.add_column("Stack",  width=7,  justify="center", style="dim")
     t.add_column("Each",   width=10, justify="right", style="cyan")
-    t.add_column("Set",    width=10, justify="right", style="bold white")
+    t.add_column("Set",    width=12, justify="right")
     t.add_column("7d",     width=14, justify="right")
     t.add_column("Listed", width=8,  justify="right", style="dim")
     t.add_column("Reward", min_width=28, style="dim")
     for i, r in enumerate(data[:limit], 1):
+        set_s = "bold bright_yellow" if r["set_cost"] >= 100 else "bold white"
         t.add_row(
             str(i), r["name"], str(r["stack"]),
             f"{_fmt(r['per_card'])}c",
-            f"{_fmt(r['set_cost'])}c",
+            Text(f"{_fmt(r['set_cost'])}c", style=set_s),
             _trend_cell(r["change_7d"]),
             str(r["listings"]),
             r["reward"],
@@ -811,11 +959,12 @@ def display_div_cards(data: list[dict], limit: int = 40) -> None:
 
 def display_gem_flipper(data: list[dict], limit: int = 30) -> None:
     if not data:
-        console.print("[dim]No gem flip opportunities found.[/dim]\n")
+        console.print("[dim]  No gem flip opportunities found.[/dim]\n")
         return
     t = Table(
         title="💎  Gem Flipper — Level / Quality Premiums",
         box=box.ROUNDED, border_style="bright_blue", title_style="bold bright_blue",
+        caption="[dim]ROI = profit as % of base cost · Gems require time to level[/dim]",
     )
     t.add_column("#",      width=4,  justify="right", style="dim")
     t.add_column("Gem",    min_width=26, style="bold cyan")
@@ -824,33 +973,35 @@ def display_gem_flipper(data: list[dict], limit: int = 30) -> None:
     t.add_column("Q",      width=5,  justify="center", style="dim")
     t.add_column("Cor",    width=5,  justify="center")
     t.add_column("Max",    width=10, justify="right", style="bold yellow")
-    t.add_column("Profit", width=10, justify="right", style="bold bright_green")
-    t.add_column("ROI",    width=7,  justify="right")
+    t.add_column("Profit", width=10, justify="right")
+    t.add_column("ROI",    width=8,  justify="right")
     t.add_column("7d",     width=14, justify="right")
     for i, r in enumerate(data[:limit], 1):
-        cor   = Text("Y", style="red") if r["corrupted"] else Text("N", style="dim")
-        roi_s = "bold bright_green" if r["roi_pct"] > 100 else "green"
+        cor    = Text("Y", style="red") if r["corrupted"] else Text("N", style="dim")
+        profit_s = "bold bright_green" if r["profit"] > 50 else "green"
+        roi_s    = "bold bright_green" if r["roi_pct"] > 100 else "green"
         t.add_row(
             str(i), r["name"],
             f"{_fmt(r['base_price'])}c",
             str(r["max_lvl"]), str(r["max_q"]), cor,
             f"{_fmt(r['max_price'])}c",
-            f"+{_fmt(r['profit'])}c",
-            Text(f"{r['roi_pct']:.0f}%", style=roi_s),
+            Text(f"+{_fmt(r['profit'])}c", style=profit_s),
+            Text(f"{r['roi_pct']:.0f}%",   style=roi_s),
             _trend_cell(r["change_7d"]),
         )
     console.print(Padding(t, (1, 0)))
-    console.print("[dim]ROI = profit as % of base cost. Gems require time to level.[/dim]\n")
+
+
+CAT_ICONS = {
+    "Currency": "💰", "Divination Card": "🃏", "Unique Weapon": "⚔️",
+    "Unique Armour": "🛡️", "Unique Accessory": "💍", "Skill Gem": "💎",
+    "Unique Flask": "🧪", "Unique Jewel": "🔮",
+}
 
 
 def display_economy_overview(data: dict, league: str) -> None:
     console.print()
     console.print(Rule(f"[bold cyan]📊  Economy Overview — {league}[/bold cyan]", style="cyan"))
-    CAT_ICONS = {
-        "Currency": "💰", "Divination Card": "🃏", "Unique Weapon": "⚔️",
-        "Unique Armour": "🛡️", "Unique Accessory": "💍", "Skill Gem": "💎",
-        "Unique Flask": "🧪", "Unique Jewel": "🔮",
-    }
     for cat, cd in data.items():
         nk   = cd["name_key"]
         icon = CAT_ICONS.get(cat, "•")
@@ -862,8 +1013,7 @@ def display_economy_overview(data: dict, league: str) -> None:
         t.add_column("Value", width=12, justify="right", style="bold yellow")
         t.add_column("7d",    width=14, justify="right")
         for item in cd["top_value"]:
-            n = item.get(nk, "?")
-            t.add_row(n, f"{_fmt(_cv(item))}c", _trend_cell(_change(item)))
+            t.add_row(item.get(nk, "?"), f"{_fmt(_cv(item))}c", _trend_cell(_change(item)))
         console.print(Padding(t, (1, 0, 0, 0)))
 
 
@@ -885,7 +1035,8 @@ def display_stash_pricer(data: list[dict]) -> None:
             t.add_row(r["name"], Text("—", style="dim"), Text("✗ not found", style="red"))
     console.print(Padding(t, (1, 0)))
     console.print(Panel(
-        f"[bold green]Total:[/bold green]  [bold yellow]{_fmt(total)}[/bold yellow] chaos  "
+        f"[bold green]Total:[/bold green]  "
+        f"[bold yellow]{_fmt(total)}[/bold yellow] chaos  "
         f"[dim]({found}/{len(data)} priced)[/dim]",
         border_style="green", padding=(0, 2),
     ))
@@ -898,12 +1049,12 @@ def display_bulk_calculator(data: list[dict]) -> None:
         title="🧮  Bulk Currency Calculator",
         box=box.ROUNDED, border_style="bright_cyan", title_style="bold bright_cyan",
     )
-    t.add_column("Item",         min_width=22, style="bold yellow")
-    t.add_column("Qty",          width=8,  justify="right", style="white")
-    t.add_column("Unit Price",   width=12, justify="right", style="dim cyan")
-    t.add_column("Total (c)",    width=14, justify="right", style="bold white")
-    t.add_column("Total (div)",  width=13, justify="right", style="bright_magenta")
-    t.add_column("",             width=10, justify="center")
+    t.add_column("Item",        min_width=22, style="bold yellow")
+    t.add_column("Qty",         width=8,  justify="right", style="white")
+    t.add_column("Unit Price",  width=12, justify="right", style="dim cyan")
+    t.add_column("Total (c)",   width=14, justify="right", style="bold white")
+    t.add_column("Total (div)", width=13, justify="right", style="bright_magenta")
+    t.add_column("",            width=10, justify="center")
     grand_c = 0.0
     grand_d = 0.0
     for r in data:
@@ -931,25 +1082,27 @@ def display_bulk_calculator(data: list[dict]) -> None:
 
 def display_watchlist(data: list[dict]) -> None:
     if not data:
-        console.print("[dim]Watchlist is empty — add items with [bold]W → A[/bold][/dim]\n")
+        console.print(
+            "[dim]  Watchlist is empty — add items with "
+            "[bold]W → a[/bold][/dim]\n"
+        )
         return
     t = Table(
         title="👁  Watchlist",
         box=box.ROUNDED, border_style="yellow", title_style="bold yellow",
     )
-    t.add_column("#",         width=4,  justify="right", style="dim")
-    t.add_column("Item",      min_width=28, style="bold yellow")
-    t.add_column("Price",     width=12, justify="right", style="bold white")
-    t.add_column("Prev",      width=12, justify="right", style="dim")
-    t.add_column("Change",    width=14, justify="right")
-    t.add_column("",          width=10, justify="center")
+    t.add_column("#",      width=4,  justify="right", style="dim")
+    t.add_column("Item",   min_width=28, style="bold yellow")
+    t.add_column("Price",  width=12, justify="right", style="bold white")
+    t.add_column("Prev",   width=12, justify="right", style="dim")
+    t.add_column("Change", width=16, justify="right")
+    t.add_column("",       width=10, justify="center")
     for i, r in enumerate(data, 1):
         if r["found"]:
             if r["delta"] is not None:
-                chg = Text(
-                    f"{_trend(r['delta'])} {r['delta']:+.2f}c",
-                    style="bright_green" if r["delta"] > 0 else ("red" if r["delta"] < 0 else "dim"),
-                )
+                chg_s = "bold bright_green" if r["delta"] > 0 else (
+                        "red" if r["delta"] < 0 else "dim")
+                chg   = Text(f"{_trend(r['delta'])} {r['delta']:+.2f}c", style=chg_s)
             else:
                 chg = Text("─ new", style="dim")
             prev = f"{_fmt(r['prev_price'])}c" if r["prev_price"] else "—"
@@ -957,16 +1110,14 @@ def display_watchlist(data: list[dict]) -> None:
                       Text("✓", style="green"))
         else:
             t.add_row(str(i), r["name"], "—", "—", Text("─", style="dim"),
-                      Text("✗ not found", style="red"))
+                      Text("✗", style="red"))
     console.print(Padding(t, (1, 0)))
 
 
 def display_top_movers(data: dict) -> None:
-    gainers = data.get("gainers", [])
-    losers  = data.get("losers", [])
-
     def _mover_table(rows: list[dict], title: str, border: str) -> Table:
-        t = Table(title=title, box=box.ROUNDED, border_style=border, title_style=f"bold {border}")
+        t = Table(title=title, box=box.ROUNDED, border_style=border,
+                  title_style=f"bold {border}")
         t.add_column("Category", width=16, style="dim")
         t.add_column("Item",     min_width=26, style="bold yellow")
         t.add_column("Price",    width=12, justify="right", style="white")
@@ -976,20 +1127,16 @@ def display_top_movers(data: dict) -> None:
                       _trend_cell(r["change"]))
         return t
 
-    console.print(Padding(
-        _mover_table(gainers, "📈  Top Gainers (7d)", "bright_green"), (1, 0)
-    ))
-    console.print(Padding(
-        _mover_table(losers,  "📉  Top Losers (7d)",  "red"), (1, 0)
-    ))
+    console.print(Padding(_mover_table(data.get("gainers",[]), "📈  Top Gainers (7d)", "bright_green"), (1,0)))
+    console.print(Padding(_mover_table(data.get("losers", []), "📉  Top Losers (7d)",  "red"),          (1,0)))
 
 
 def display_item_search(data: list[dict], query: str) -> None:
     if not data:
-        console.print(f"[dim]No results for '[yellow]{query}[/yellow]'.[/dim]\n")
+        console.print(f"[dim]  No results for '[yellow]{query}[/yellow]'.[/dim]\n")
         return
     t = Table(
-        title=f"🔍  Search results for '{query}'  ({len(data)} found)",
+        title=f"🔍  Search: '{query}'  ({len(data)} found)",
         box=box.ROUNDED, border_style="cyan", title_style="bold cyan",
     )
     t.add_column("Category", width=16, style="dim")
@@ -1002,7 +1149,7 @@ def display_item_search(data: list[dict], query: str) -> None:
     console.print(Padding(t, (1, 0)))
 
 
-# ── Startup — market pulse panel ──────────────────────────────────────────────
+# ── Market Pulse panel ────────────────────────────────────────────────────────
 
 def show_market_pulse(league: str, cfg: dict) -> None:
     lines = cache_get(f"ninja_{league}_currencyoverview_Currency")
@@ -1010,25 +1157,38 @@ def show_market_pulse(league: str, cfg: dict) -> None:
         return
     div   = next((i for i in lines if i.get("currencyTypeName") == "Divine Orb"), None)
     exalt = next((i for i in lines if i.get("currencyTypeName") == "Exalted Orb"), None)
+    mir   = next((i for i in lines if i.get("currencyTypeName") == "Mirror of Kalandra"), None)
     if not div:
         return
+
     div_c   = _cv(div)
     div_chg = _change(div)
-    parts   = [
+    age     = cache_age(f"ninja_{league}_currencyoverview_Currency") or "live"
+
+    parts = [
         f"[bold white]Divine Orb[/bold white]  "
-        f"[bold yellow]{_fmt(div_c)}c[/bold yellow]  {_trend_cell(div_chg).plain}"
+        f"[bold yellow]{_fmt(div_c)}c[/bold yellow]  {_trend_markup(div_chg)}"
     ]
     if exalt:
-        ex_c = _cv(exalt)
+        ex_c   = _cv(exalt)
+        ex_chg = _change(exalt)
         parts.append(
-            f"[dim]│[/dim]  "
+            f"  [dim]│[/dim]  "
             f"[bold white]Exalted Orb[/bold white]  "
-            f"[bold yellow]{_fmt(ex_c)}c[/bold yellow]"
+            f"[bold yellow]{_fmt(ex_c)}c[/bold yellow]  {_trend_markup(ex_chg)}"
         )
-    age = cache_age(f"ninja_{league}_currencyoverview_Currency") or "fresh"
+    if mir:
+        mir_c = _cv(mir)
+        parts.append(
+            f"  [dim]│[/dim]  "
+            f"[bold white]Mirror[/bold white]  "
+            f"[bold yellow]{_fmt(mir_c)}c[/bold yellow]"
+        )
+    parts.append(f"  [dim]│  {age}[/dim]")
+
     console.print(Panel(
-        "  ".join(parts) + f"  [dim]│  data {age}[/dim]",
-        title=f"[bold cyan]Market Pulse — {league}[/bold cyan]",
+        "".join(parts),
+        title=f"[bold cyan]⚡ Market Pulse — {league}[/bold cyan]",
         border_style="cyan", padding=(0, 2),
     ))
     console.print()
@@ -1082,7 +1242,6 @@ def export_html_data(data: list[dict], title: str, path: Path) -> Path:
       border-bottom:2px solid #373a40;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;}}
   td{{padding:.5rem 1rem;border-bottom:1px solid #2c2e33;font-size:.9rem;}}
   tr:hover td{{background:#25262b;}}
-  tfoot td{{background:#2c2e33;font-weight:600;color:#fff;padding:.6rem 1rem;}}
 </style></head>
 <body>
 <h1>⚔️  {title}</h1>
@@ -1097,25 +1256,28 @@ def prompt_export(data: list[dict], slug: str) -> None:
     if not data:
         return
     console.print(
-        "[dim]Export? [bold]csv[/bold] / [bold]json[/bold] / "
-        "[bold]html[/bold] or Enter to skip:[/dim]"
+        "\n[dim]Export? [bold]csv[/bold] / [bold]json[/bold] / "
+        "[bold]html[/bold] — or Enter to skip[/dim]"
     )
     try:
-        fmt = Prompt.ask("[cyan]Format[/cyan]", default="").strip().lower()
+        fmt = pt_ask("Format", completer=_format_completer(),
+                     history_key="export").lower()
     except (KeyboardInterrupt, EOFError):
         return
     if not fmt:
         return
     ext = {"csv": ".csv", "json": ".json", "html": ".html"}.get(fmt)
     if not ext:
-        console.print("[red]Unknown format.[/red]")
+        console.print("[red]  Unknown format — use csv, json, or html.[/red]")
         return
-    out = Path.cwd() / f"steen_poe_{slug}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}{ext}"
+    out = Path.cwd() / f"steen_{slug}_{datetime.now().strftime('%Y%m%d_%H%M')}{ext}"
     if   fmt == "csv":  export_csv(data, out)
     elif fmt == "json": export_json_data(data, slug, out)
     else:               export_html_data(data, slug.replace("_", " ").title(), out)
-    console.print(Panel(f"[bold green]✓ Saved:[/bold green] [cyan]{out}[/cyan]",
-                        border_style="green", padding=(0, 2)))
+    console.print(Panel(
+        f"[bold green]✓  Saved:[/bold green] [cyan]{out}[/cyan]",
+        border_style="green", padding=(0, 2),
+    ))
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -1124,11 +1286,11 @@ def setup_auth(cfg: dict) -> dict:
     console.print(Panel(
         Markdown(
             "## POESESSID Login (Optional)\n\n"
-            "All current modules use **poe.ninja** and work without a login.\n"
+            "All modules use **poe.ninja** and work without a login.\n"
             "A POESESSID enables future live trade search features.\n\n"
             "**How to get it:**\n"
             "1. Log into **pathofexile.com** in your browser\n"
-            "2. Open DevTools → **F12** → Application tab → Cookies\n"
+            "2. Open DevTools → **F12** → Application → Cookies\n"
             "3. Copy the value next to `POESESSID`\n\n"
             "Stored in `~/.steen_poe/config.json` — only sent to GGG servers."
         ),
@@ -1136,9 +1298,7 @@ def setup_auth(cfg: dict) -> dict:
         border_style="cyan", padding=(1, 2),
     ))
     try:
-        sessid = Prompt.ask(
-            "\n[cyan]POESESSID[/cyan] [dim](paste or Enter to skip)[/dim]", default=""
-        ).strip()
+        sessid = pt_ask("POESESSID (paste or Enter to skip)", history_key="auth")
     except (KeyboardInterrupt, EOFError):
         return cfg
     if sessid:
@@ -1146,7 +1306,7 @@ def setup_auth(cfg: dict) -> dict:
         save_config(cfg)
         console.print("[green]✓  POESESSID saved.[/green]")
     else:
-        console.print("[dim]Skipped.[/dim]")
+        console.print("[dim]  Skipped.[/dim]")
     return cfg
 
 
@@ -1155,21 +1315,21 @@ def setup_auth(cfg: dict) -> dict:
 def select_league(cfg: dict) -> str:
     current = cfg.get("league", "")
     leagues = fetch_leagues(cfg)
+    console.print()
+    console.print(Rule("[bold cyan]Select League[/bold cyan]", style="cyan"))
     t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
     t.add_column("#", style="bold white", width=4, justify="right")
     t.add_column("League", style="bold yellow")
     for i, lg in enumerate(leagues, 1):
         mark = " [bold green]← current[/bold green]" if lg == current else ""
         t.add_row(str(i), f"{lg}{mark}")
-    console.print()
-    console.print(Rule("[bold cyan]Select League[/bold cyan]", style="cyan"))
     console.print(Padding(t, (1, 2)))
+    console.print("[dim]  Type a number, league name, or Tab to browse[/dim]\n")
+    completer = _league_completer(leagues)
     while True:
         try:
-            choice = Prompt.ask(
-                "[cyan]League[/cyan] [dim](number or name)[/dim]",
-                default=current or leagues[0],
-            ).strip()
+            choice = pt_ask("League", completer=completer,
+                            default=current or leagues[0], history_key="league")
         except (KeyboardInterrupt, EOFError):
             return current or leagues[0]
         if choice.isdigit() and 1 <= int(choice) <= len(leagues):
@@ -1177,7 +1337,7 @@ def select_league(cfg: dict) -> str:
         elif choice in leagues:
             league = choice
         else:
-            console.print("[red]Invalid selection.[/red]")
+            console.print("[red]  Invalid — use a number or exact league name.[/red]")
             continue
         cfg["league"] = league
         save_config(cfg)
@@ -1187,163 +1347,283 @@ def select_league(cfg: dict) -> str:
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 def settings_menu(cfg: dict) -> dict:
+    settings_c = WordCompleter(["1","2","3","4","b"], ignore_case=True) if _HAS_PT else None
     while True:
         console.print()
-        console.print(Rule("[bold cyan]Settings[/bold cyan]", style="cyan"))
+        console.print(Rule("[bold cyan]⚙  Settings[/bold cyan]", style="cyan"))
         cache_count = len(list(CACHE_DIR.glob("*.json"))) if CACHE_DIR.exists() else 0
         auth_status = "[bold green]✓ Set[/bold green]" if cfg.get("poesessid") else "[dim]Not set[/dim]"
+        ttl_val     = cfg.get("cache_ttl", CACHE_TTL)
         t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
         t.add_column("#", style="bold white", width=4, justify="right")
-        t.add_column("", style="bold yellow")
-        t.add_column("", style="dim")
-        t.add_row("1", "Set / update POESESSID", auth_status)
-        t.add_row("2", "Change default league",  cfg.get("league", "not set"))
-        t.add_row("3", "Clear cache",            f"{cache_count} file(s)")
-        t.add_row("4", "Back",                   "")
+        t.add_column("",  style="bold yellow")
+        t.add_column("",  style="dim")
+        t.add_row("1", "Set / update POESESSID",   auth_status)
+        t.add_row("2", "Clear cache",               f"{cache_count} file(s)")
+        t.add_row("3", "Change cache TTL",          f"{ttl_val} min")
+        t.add_row("4", "Remove POESESSID",          "")
+        t.add_row("b", "Back",                      "")
         console.print(Padding(t, (1, 2)))
         try:
-            choice = Prompt.ask("[cyan]Option[/cyan]", default="4").strip()
+            choice = pt_ask("Setting", completer=settings_c,
+                            default="b", history_key="settings").lower()
         except (KeyboardInterrupt, EOFError):
             break
-        if   choice == "1": cfg = setup_auth(cfg)
-        elif choice == "2": select_league(cfg)
+        if choice == "1":
+            cfg = setup_auth(cfg)
+        elif choice == "2":
+            for p in CACHE_DIR.glob("*.json"):
+                p.unlink()
+            console.print("[green]✓  Cache cleared.[/green]")
         elif choice == "3":
-            for f in CACHE_DIR.glob("*.json"):
-                f.unlink()
-            console.print(f"[green]✓  Cleared {cache_count} cache file(s).[/green]")
-        elif choice == "4": break
+            try:
+                v = pt_ask(f"Cache TTL in minutes [{ttl_val}]", history_key="ttl")
+                if v.isdigit():
+                    cfg["cache_ttl"] = int(v)
+                    save_config(cfg)
+                    console.print(f"[green]✓  TTL set to {v} min.[/green]")
+            except (KeyboardInterrupt, EOFError):
+                pass
+        elif choice == "4":
+            cfg.pop("poesessid", None)
+            save_config(cfg)
+            console.print("[green]✓  POESESSID removed.[/green]")
+        elif choice in ("b", "back", ""):
+            break
     return cfg
 
 
-# ── Help ──────────────────────────────────────────────────────────────────────
+# ── Help screen ───────────────────────────────────────────────────────────────
 
 def print_help() -> None:
-    console.print(Panel(
-        Markdown("""## Steen POE Marketer v2 — Help
-
-### Modules
-| # | Module | What it does |
-|---|---|---|
-| 1 | Currency Analysis | Buy/sell spreads vs ninja median — sort by biggest discount |
-| 2 | Arbitrage Finder | Round-number trade margins between currency pairs |
-| 3 | Divination Cards | Set costs, reward text, 7-day trend — optional min-cost filter |
-| 4 | Gem Flipper | Base → max level/quality profit and ROI — optional min-profit filter |
-| 5 | Economy Overview | Top-value items across all 8 categories |
-| 6 | Stash Pricer | Type item names, get chaos values and grand total |
-| 7 | Bulk Calculator | Calc total value of stacks (e.g. "40 divine") |
-| 8 | Watchlist | Track specific items, see price deltas vs last check |
-| 9 | Top Movers | Biggest % gainers and losers across all categories this week |
-| 10 | Item Search | Search by name across every tracked category |
-
-### Reading the tables
-- **▲ / ▼ / ─** trend arrows show 7-day price direction
-- **Discount** (Currency) — negative = below median = buying opportunity
-- **Spread** — gap between buy and sell price; tighter = more liquid
-- **ROI** (Gems) — profit as % of your upfront cost
-
-### Bulk Calculator shortcuts
-`div` `divine` · `ex` `exalt` · `c` `chaos` · `mir` `mirror` · `fuse` `fusing`
-`gcp` · `alch` · `alt` · `regal` · `annul` · `vaal` · `chrome` · `jew` `jeweller`
-
-### Export (after every module)
-Type `csv`, `json`, or `html` at the export prompt.
-Files are saved to the current directory as `steen_poe_<module>_<timestamp>.<ext>`.
-
-### Cache
-Price data is cached for **15 minutes** in `~/.steen_poe/cache/`.
-Clear from Settings to force a fresh fetch.
-
-### Disclaimer
-Data from **poe.ninja** (community price index). Prices are medians — actual
-listings vary. Not affiliated with Grinding Gear Games.
-"""),
-        title="[bold cyan]Help[/bold cyan]",
-        border_style="cyan", padding=(1, 2),
+    console.print()
+    console.print(Rule(
+        "[bold cyan]⚔  Steen POE Marketer — Help & Reference[/bold cyan]", style="cyan"
     ))
+    console.print()
+
+    # Navigation table
+    nav = Table(
+        box=box.SIMPLE_HEAD, border_style="dim cyan",
+        title="[bold white]Navigation[/bold white]", title_style="bold white",
+        padding=(0, 2),
+    )
+    nav.add_column("Key", style="bold yellow", width=5, no_wrap=True)
+    nav.add_column("Module / Action", style="bold white", min_width=20)
+    nav.add_column("What it does", style="dim", min_width=38)
+    for key, name, desc in [
+        ("1",  "Currency Analysis",  "Buy/sell spreads · discounts vs median · ▲▼ trends"),
+        ("2",  "Arbitrage Finder",   "Round-number trade margins between currency pairs"),
+        ("3",  "Divination Cards",   "Set costs · reward text · trend · filter by cost"),
+        ("4",  "Gem Flipper",        "Base→max level/quality margins and ROI %"),
+        ("5",  "Economy Overview",   "Top items by value across all 8 categories"),
+        ("6",  "Stash Pricer",       "Enter item names → chaos values + grand total"),
+        ("7",  "Bulk Calculator",    "Enter '40 div' etc. → total in chaos + divine"),
+        ("8",  "Watchlist",          "Track items · see price deltas since last check"),
+        ("9",  "Top Movers",         "Biggest % gainers and losers (7-day)"),
+        ("10", "Item Search",        "Fuzzy search by name across all categories"),
+        ("",   "",                   ""),
+        ("L",  "Change League",      "Switch the active league"),
+        ("W",  "Manage Watchlist",   "Add / remove / clear watched items"),
+        ("S",  "Settings",           "POESESSID · cache · TTL"),
+        ("H",  "Help",               "This screen"),
+        ("Q",  "Quit",               "Goodbye, Exile"),
+    ]:
+        nav.add_row(key, name, desc)
+    console.print(Padding(nav, (0, 0, 1, 0)))
+
+    # Two-column: completion guide + column decoder
+    completion_panel = Panel(
+        "[bold white]All inputs support Tab completion.[/bold white]\n\n"
+        "[bold cyan]Where it works:[/bold cyan]\n"
+        "  [yellow]►[/yellow] [bold]Item Search[/bold]    — fuzzy-match any item name\n"
+        "  [yellow]►[/yellow] [bold]Stash Pricer[/bold]   — complete item names\n"
+        "  [yellow]►[/yellow] [bold]Watchlist Add[/bold]  — complete item names\n"
+        "  [yellow]►[/yellow] [bold]Bulk Calc[/bold]      — complete currency aliases\n"
+        "  [yellow]►[/yellow] [bold]League Select[/bold]  — complete league names\n"
+        "  [yellow]►[/yellow] [bold]Main Menu[/bold]      — complete 1–10, L, W, S, H, Q\n"
+        "  [yellow]►[/yellow] [bold]Export[/bold]         — complete csv / json / html\n\n"
+        "[bold cyan]Controls:[/bold cyan]\n"
+        "  [bold yellow]Tab[/bold yellow]       show / cycle completions\n"
+        "  [bold yellow]↑ / ↓[/bold yellow]     scroll through history\n"
+        "  [bold yellow]→[/bold yellow]         accept suggestion\n"
+        "  [bold yellow]Ctrl+C[/bold yellow]    cancel / go back\n\n"
+        "[dim]Completions use cached data.\n"
+        "Run any module first for full suggestions.[/dim]",
+        title="[bold cyan]Tab Completion[/bold cyan]",
+        border_style="cyan", padding=(1, 2),
+    )
+
+    column_panel = Panel(
+        "[bold white]Reading the tables[/bold white]\n\n"
+        f"  [bold bright_green]▲ +X.X%[/bold bright_green]   price rising (7-day)\n"
+        f"  [bold red]▼ −X.X%[/bold red]   price falling (7-day)\n"
+        f"  [dim]─ 0.0%[/dim]    stable price\n\n"
+        "[bold cyan]Columns:[/bold cyan]\n"
+        "  [yellow]Spread[/yellow]     buy/sell gap — lower = more liquid\n"
+        "  [yellow]Discount[/yellow]   vs median — negative = bargain [bold]★[/bold]\n"
+        "  [yellow]ROI[/yellow]        gem profit as % of base cost\n"
+        "  [yellow]Margin[/yellow]     arbitrage gain %, [bold]🔥[/bold] = >10%\n"
+        "  [yellow]Set Cost[/yellow]   full divination card set value\n"
+        "  [yellow]Max Lvl/Q[/yellow]  gem level/quality at which price was taken\n\n"
+        "[bold cyan]Units:[/bold cyan]\n"
+        "  [yellow]c[/yellow]    chaos orb\n"
+        "  [yellow]div[/yellow]  divine orb\n"
+        "  [yellow]k[/yellow]    thousands  [yellow]M[/yellow]  millions",
+        title="[bold yellow]Column Guide[/bold yellow]",
+        border_style="yellow", padding=(1, 2),
+    )
+    console.print(Columns([completion_panel, column_panel], equal=True, expand=True))
+    console.print()
+
+    # Two-column: bulk aliases + tips
+    alias_rows = "\n".join(
+        f"  [bold yellow]{a:<14}[/bold yellow][dim]→[/dim] {f}"
+        for a, f in [
+            ("div / divine",  "Divine Orb"),
+            ("ex / exalt",    "Exalted Orb"),
+            ("c / chaos",     "Chaos Orb"),
+            ("mir / mirror",  "Mirror of Kalandra"),
+            ("fuse",          "Orb of Fusing"),
+            ("alch",          "Orb of Alchemy"),
+            ("alt",           "Orb of Alteration"),
+            ("gcp",           "Gemcutter's Prism"),
+            ("regal",         "Regal Orb"),
+            ("annul",         "Orb of Annulment"),
+            ("vaal",          "Vaal Orb"),
+            ("chrome",        "Chromatic Orb"),
+            ("jew",           "Jeweller's Orb"),
+            ("scour",         "Orb of Scouring"),
+            ("regret",        "Orb of Regret"),
+            ("chisel",        "Cartographer's Chisel"),
+        ]
+    )
+    alias_panel = Panel(
+        alias_rows,
+        title="[bold bright_cyan]🧮  Bulk Calculator Shortcuts[/bold bright_cyan]",
+        border_style="bright_cyan", padding=(1, 2),
+    )
+
+    tips_panel = Panel(
+        "  [yellow]Currency Analysis[/yellow]\n"
+        "    Negative Discount = buying below median = buy opp\n\n"
+        "  [yellow]Arbitrage[/yellow]\n"
+        "    Focus on margins >5% with liquid (high-volume) pairs\n\n"
+        "  [yellow]Gem Flipper[/yellow]\n"
+        "    Set min profit ≥50c for reliable, less-noisy flips\n\n"
+        "  [yellow]Watchlist[/yellow]\n"
+        "    Run it daily to track key items across sessions\n\n"
+        "  [yellow]Top Movers[/yellow]\n"
+        "    Big gainers often signal a new meta shift early\n\n"
+        "  [yellow]Stash Pricer[/yellow]\n"
+        "    Empty line or 'done' to finish entering items\n\n"
+        "  [yellow]Data freshness[/yellow]\n"
+        "    Market Pulse shows cache age — 15 min TTL\n\n"
+        "  [yellow]Export[/yellow]\n"
+        "    Every module offers CSV / JSON / HTML after results",
+        title="[bold green]Tips[/bold green]",
+        border_style="green", padding=(1, 2),
+    )
+    console.print(Columns([alias_panel, tips_panel], equal=True, expand=True))
+    console.print()
 
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 
-BANNER_LINES = [
-    ("bold bright_cyan",   "  ███████╗████████╗███████╗███████╗███╗   ██╗"),
-    ("bold cyan",          "  ██╔════╝╚══██╔══╝██╔════╝██╔════╝████╗  ██║"),
-    ("bold blue",          "  ███████╗   ██║   █████╗  █████╗  ██╔██╗ ██║"),
-    ("bold bright_blue",   "  ╚════██║   ██║   ██╔══╝  ██╔══╝  ██║╚██╗██║"),
-    ("bold magenta",       "  ███████║   ██║   ███████╗███████╗██║ ╚████║"),
-    ("bold bright_magenta","  ╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═══╝"),
-    ("bold bright_yellow", ""),
-    ("bold bright_yellow", "  ██████╗  ██████╗ ███████╗    ███╗   ███╗ █████╗ ██████╗ ██╗  ██╗███████╗████████╗███████╗██████╗"),
-    ("bold yellow",        "  ██╔══██╗██╔═══██╗██╔════╝    ████╗ ████║██╔══██╗██╔══██╗██║ ██╔╝██╔════╝╚══██╔══╝██╔════╝██╔══██╗"),
-    ("bold white",         "  ██████╔╝██║   ██║█████╗      ██╔████╔██║███████║██████╔╝█████╔╝ █████╗     ██║   █████╗  ██████╔╝"),
-    ("bold yellow",        "  ██╔═══╝ ██║   ██║██╔══╝      ██║╚██╔╝██║██╔══██║██╔══██╗██╔═██╗ ██╔══╝     ██║   ██╔══╝  ██╔══██╗"),
-    ("bold bright_yellow", "  ██║     ╚██████╔╝███████╗    ██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██╗███████╗   ██║   ███████╗██║  ██║"),
-    ("dim yellow",         "  ╚═╝      ╚═════╝ ╚══════╝    ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"),
-]
-
-
 def print_banner() -> None:
     console.print()
-    for style, line in BANNER_LINES:
-        console.print(line, style=style)
+    steen_lines = [
+        ("bold bright_white", "  ███████╗████████╗███████╗███████╗███╗   ██╗  ██████╗  ██████╗ ███████╗"),
+        ("white",             "  ██╔════╝╚══██╔══╝██╔════╝██╔════╝████╗  ██║  ██╔══██╗██╔═══██╗██╔════╝"),
+        ("bright_cyan",       "  ███████╗   ██║   █████╗  █████╗  ██╔██╗ ██║  ██████╔╝██║   ██║█████╗  "),
+        ("cyan",              "  ╚════██║   ██║   ██╔══╝  ██╔══╝  ██║╚██╗██║  ██╔═══╝ ██║   ██║██╔══╝  "),
+        ("blue",              "  ███████║   ██║   ███████╗███████╗██║ ╚████║  ██║     ╚██████╔╝███████╗ "),
+        ("dim blue",          "  ╚══════╝   ╚═╝   ╚══════╝╚══════╝╚═╝  ╚═══╝  ╚═╝      ╚═════╝ ╚══════╝"),
+    ]
+    for style, line in steen_lines:
+        console.print(f"[{style}]{line}[/{style}]")
+    marketer_lines = [
+        ("bold bright_yellow", "  ███╗   ███╗ █████╗ ██████╗ ██╗  ██╗███████╗████████╗███████╗██████╗  "),
+        ("bright_yellow",      "  ████╗ ████║██╔══██╗██╔══██╗██║ ██╔╝██╔════╝╚══██╔══╝██╔════╝██╔══██╗ "),
+        ("yellow",             "  ██╔████╔██║███████║██████╔╝█████╔╝ █████╗     ██║   █████╗  ██████╔╝ "),
+        ("yellow",             "  ██║╚██╔╝██║██╔══██║██╔══██╗██╔═██╗ ██╔══╝     ██║   ██╔══╝  ██╔══██╗ "),
+        ("dark_orange",        "  ██║ ╚═╝ ██║██║  ██║██║  ██║██║  ██╗███████╗   ██║   ███████╗██║  ██║ "),
+        ("dim",                "  ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"),
+    ]
+    for style, line in marketer_lines:
+        console.print(f"[{style}]{line}[/{style}]")
     console.print()
-    grid = Table.grid(expand=True)
-    grid.add_column(justify="center")
-    grid.add_row(Text("⚔️  Path of Exile Market Analysis Tool", style="bold white"))
-    grid.add_row(Text(
-        f"v{APP_VERSION}  ·  poe.ninja data  ·  Optional PoE login  ·  MIT Licence",
-        style="dim white",
-    ))
-    console.print(Panel(grid, border_style="bright_cyan", padding=(0, 2)))
+    tab_hint = "[bold cyan]Tab[/bold cyan] autocomplete" if _HAS_PT else "no autocomplete (install prompt_toolkit)"
+    console.print(
+        f"  [dim]v{APP_VERSION}  ·  poe.ninja data  ·  {tab_hint}  ·  MIT Licence[/dim]"
+    )
     console.print()
 
 
 # ── Main menu ─────────────────────────────────────────────────────────────────
 
 def main_menu(cfg: dict, league: str) -> None:
+    mcompleter = _menu_completer()
     while True:
         watchlist = load_watchlist(cfg)
-        wl_badge  = f" [dim]({len(watchlist)})[/dim]" if watchlist else ""
+        wl_count  = f" ({len(watchlist)})" if watchlist else ""
 
         console.print()
         console.print(Rule(
-            f"[bold cyan]Main Menu[/bold cyan]  [dim]League: [yellow]{league}[/yellow][/dim]",
+            f"[bold cyan]Main Menu[/bold cyan]  "
+            f"[dim]League: [yellow]{league}[/yellow][/dim]",
             style="cyan",
         ))
         show_market_pulse(league, cfg)
 
-        auth_dot = " [bold green]●[/bold green]" if cfg.get("poesessid") else ""
-        t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
-        t.add_column("#",  style="bold white", width=4, justify="right")
-        t.add_column("",   style="bold yellow")
-        t.add_column("",   style="dim", min_width=46)
-        for row in [
-            ("1",  "Currency Analysis",   "Buy/sell spreads · discount vs median · ▲▼ trends"),
-            ("2",  "Arbitrage Finder",    "Profitable round-number trades between pairs"),
-            ("3",  "Divination Cards",    "Set costs · reward text · trend · filter by cost"),
-            ("4",  "Gem Flipper",         "Base → max level/quality margins · ROI"),
-            ("5",  "Economy Overview",    "Top-value items across all 8 categories"),
-            ("6",  "Stash Pricer",        "Type item names → chaos values & grand total"),
-            ("7",  "Bulk Calculator",     "Value stacks of currency (e.g. '40 divine')"),
-            ("8",  f"Watchlist{wl_badge}", "Track items & see price changes since last check"),
-            ("9",  "Top Movers",          "Biggest % gainers & losers across all categories"),
-            ("10", "Item Search",         "Search by name across every tracked category"),
-            ("",   "",                    ""),
-            ("L",  "Change League",       f"Currently: {league}"),
-            ("W",  "Manage Watchlist",    "Add / remove / clear watched items"),
-            ("S",  "Settings",            f"Auth{auth_dot} · Cache · League"),
-            ("H",  "Help",                "All commands and how to read the data"),
-            ("Q",  "Quit",                ""),
+        auth_dot  = " [bold green]●[/bold green]" if cfg.get("poesessid") else ""
+
+        # Two-column menu layout
+        left = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
+        left.add_column("#",   style="bold yellow",  width=4,  justify="right")
+        left.add_column("",   width=2)
+        left.add_column("Module", style="bold white", min_width=20)
+        left.add_column("Hint",   style="dim",        min_width=32)
+        for num, icon, name, hint in [
+            ("1",  "⚖ ", "Currency Analysis",  "Buy/sell spreads · discount flags"),
+            ("2",  "🔄", "Arbitrage Finder",   "Round-number margins · 🔥 hot picks"),
+            ("3",  "🃏", "Divination Cards",   "Set costs · rewards · trend"),
+            ("4",  "💎", "Gem Flipper",        "Base→max margins · ROI"),
+            ("5",  "📊", "Economy Overview",   "Top items across 8 categories"),
+            ("6",  "🏦", "Stash Pricer",       "Price your tab items"),
+            ("7",  "🧮", "Bulk Calculator",    "Value stacks (40 div, 200c …)"),
+            (f"8{wl_count}", "👁 ", f"Watchlist{wl_count}",   "Track items · price deltas"),
+            ("9",  "📈", "Top Movers",         "Biggest gainers & losers (7d)"),
+            ("10", "🔍", "Item Search",        "Fuzzy search all categories"),
         ]:
-            t.add_row(*row)
-        console.print(Padding(t, (1, 2)))
+            left.add_row(num, icon, name, hint)
+
+        right = Table(box=box.SIMPLE, show_header=False, padding=(0, 1))
+        right.add_column("Key",    style="bold yellow",   width=4)
+        right.add_column("Action", style="bold white",    min_width=20)
+        right.add_column("",       style="dim",           min_width=16)
+        right.add_row("L", "Change League",        league)
+        right.add_row(f"W{wl_count}", f"Watchlist{wl_count}", "Add / remove / clear")
+        right.add_row("S", f"Settings{auth_dot}",  "Auth · Cache · TTL")
+        right.add_row("H", "Help",                 "Navigation + tips")
+        right.add_row("Q", "Quit",                 "")
+
+        console.print(Columns([Padding(left, (0, 2, 0, 0)), right], expand=False))
+        console.print()
+        if _HAS_PT:
+            console.print(
+                "  [dim]↑/↓  history  ·  [bold]Tab[/bold]  complete  ·  Ctrl+C  cancel[/dim]"
+            )
+        console.print()
 
         try:
-            choice = Prompt.ask("[bold cyan]Select[/bold cyan]").strip().lower()
+            choice = pt_ask("Select", completer=mcompleter,
+                            history_key="menu").lower()
         except (KeyboardInterrupt, EOFError):
             console.print("\n[dim]Goodbye, Exile.[/dim]")
             break
 
-        if choice in ("q", "/quit", "/exit"):
+        if choice in ("q", "/quit", "/exit", "quit", "exit"):
             console.print("[dim]Goodbye, Exile.[/dim]")
             break
 
@@ -1365,9 +1645,8 @@ def main_menu(cfg: dict, league: str) -> None:
 
         elif choice == "3":
             try:
-                raw = Prompt.ask(
-                    "[dim]Min set cost in chaos (Enter for all)[/dim]", default="0"
-                ).strip()
+                raw = pt_ask("Min set cost in chaos (Enter for all)",
+                             default="0", history_key="div_filter")
                 min_c = float(raw) if raw else 0
             except (ValueError, KeyboardInterrupt, EOFError):
                 min_c = 0
@@ -1380,9 +1659,8 @@ def main_menu(cfg: dict, league: str) -> None:
 
         elif choice == "4":
             try:
-                raw = Prompt.ask(
-                    "[dim]Min profit in chaos (Enter for 5c default)[/dim]", default="5"
-                ).strip()
+                raw = pt_ask("Min profit in chaos (Enter for 5c default)",
+                             default="5", history_key="gem_filter")
                 min_p = float(raw) if raw else 5
             except (ValueError, KeyboardInterrupt, EOFError):
                 min_p = 5
@@ -1394,8 +1672,8 @@ def main_menu(cfg: dict, league: str) -> None:
             prompt_export(data, "gem_flipper")
 
         elif choice == "5":
-            overview = run_economy_overview(league, cfg)
-            display_economy_overview(overview, league)
+            data = run_economy_overview(league, cfg)
+            display_economy_overview(data, league)
 
         elif choice == "6":
             data = run_stash_pricer(league, cfg)
@@ -1409,10 +1687,15 @@ def main_menu(cfg: dict, league: str) -> None:
                 display_bulk_calculator(data)
                 prompt_export([r for r in data if r["found"]], "bulk_calculator")
 
-        elif choice == "8":
-            data = run_watchlist(league, cfg)
-            display_watchlist(data)
-            prompt_export([r for r in data if r["found"]], "watchlist")
+        elif choice in ("8", f"8{wl_count}"):
+            if not load_watchlist(cfg):
+                console.print(
+                    "[dim]  Watchlist is empty. Press [bold]W[/bold] to add items.[/dim]\n"
+                )
+            else:
+                data = run_watchlist(league, cfg)
+                display_watchlist(data)
+                prompt_export([r for r in data if r["found"]], "watchlist")
 
         elif choice == "9":
             data = run_top_movers(league, cfg)
@@ -1422,15 +1705,15 @@ def main_menu(cfg: dict, league: str) -> None:
 
         elif choice == "10":
             data = run_item_search(league, cfg)
-            if data is not None:
+            if data:
                 display_item_search(data, "")
                 prompt_export(data, "item_search")
 
         elif choice == "l":
             league = select_league(cfg)
 
-        elif choice == "w":
-            cfg = manage_watchlist(cfg)
+        elif choice in ("w", f"w{wl_count}"):
+            cfg = manage_watchlist(cfg, league=league)
 
         elif choice == "s":
             cfg = settings_menu(cfg)
@@ -1439,7 +1722,7 @@ def main_menu(cfg: dict, league: str) -> None:
             print_help()
 
         else:
-            console.print("[red]Invalid selection.[/red]")
+            console.print("[red]  Invalid — type a number 1–10 or L/W/S/H/Q[/red]")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -1450,7 +1733,7 @@ def _parse_args() -> argparse.Namespace:
         description="Steen POE Marketer — Path of Exile market analysis.",
     )
     p.add_argument("-l", "--league", help="Start with this league (skip selection)")
-    p.add_argument("-s", "--search", help="Go straight to item search with this query")
+    p.add_argument("-s", "--search", help="Jump to item search with this query")
     p.add_argument("--version", action="version", version=f"{APP_NAME} v{APP_VERSION}")
     return p.parse_args()
 
@@ -1461,7 +1744,6 @@ def main() -> None:
 
     print_banner()
 
-    # Connectivity check
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   console=console, transient=True) as p:
         task = p.add_task("Checking poe.ninja…")
@@ -1471,18 +1753,18 @@ def main() -> None:
     if not online:
         console.print(Panel(
             "[bold red]Could not reach poe.ninja.[/bold red]\n"
-            "Check your internet connection. Cached data will be used if available.",
+            "Check your connection. Cached data will be used if available.",
             border_style="red", padding=(0, 2),
         ))
     else:
         console.print("[green]✓  poe.ninja online[/green]\n")
 
-    # First-run welcome
     if not cfg:
         console.print(Panel(
             "[bold white]Welcome to Steen POE Marketer![/bold white]\n\n"
-            "All features use [cyan]poe.ninja[/cyan] data — no login required.\n"
-            "A POESESSID cookie is optional and can be added any time via Settings.\n",
+            "All features use [cyan]poe.ninja[/cyan] — no login required.\n"
+            "A POESESSID is optional and can be added via [bold]S → Settings[/bold].\n\n"
+            + ("[bold cyan]Tab[/bold cyan] autocomplete is active on all inputs." if _HAS_PT else ""),
             title="[bold cyan]First Run[/bold cyan]",
             border_style="cyan", padding=(1, 2),
         ))
@@ -1491,7 +1773,6 @@ def main() -> None:
         else:
             save_config(cfg)
 
-    # League selection
     if args.league:
         league = args.league
         cfg["league"] = league
@@ -1501,11 +1782,10 @@ def main() -> None:
     else:
         league = cfg["league"]
         console.print(
-            f"[dim]League: [yellow]{league}[/yellow]  "
+            f"[dim]  League: [yellow]{league}[/yellow]  "
             "(change with [bold]L[/bold] in the menu)[/dim]\n"
         )
 
-    # Direct search flag
     if args.search:
         data = run_item_search(league, cfg, query=args.search)
         display_item_search(data, args.search)

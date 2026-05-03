@@ -291,7 +291,7 @@ Fuzzy name search across all categories, ranked by price. Also accessible via `-
   <td>Regal Orb</td>
 </tr>
 <tr>
-  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/AnnulmentOrb.png" height="22" alt="Orb of Annulment"></td>
+  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/AnnullOrb.png" height="22" alt="Orb of Annulment"></td>
   <td><code>annul</code></td>
   <td>Orb of Annulment</td>
 </tr>
@@ -301,7 +301,7 @@ Fuzzy name search across all categories, ranked by price. Also accessible via `-
   <td>Vaal Orb</td>
 </tr>
 <tr>
-  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyRecolour.png" height="22" alt="Chromatic Orb"></td>
+  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyRerollSocketColours.png" height="22" alt="Chromatic Orb"></td>
   <td><code>chrome</code></td>
   <td>Chromatic Orb</td>
 </tr>
@@ -316,7 +316,7 @@ Fuzzy name search across all categories, ranked by price. Also accessible via `-
   <td>Orb of Scouring</td>
 </tr>
 <tr>
-  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyPassiveRefund.png" height="22" alt="Orb of Regret"></td>
+  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyPassiveSkillRefund.png" height="22" alt="Orb of Regret"></td>
   <td><code>regret</code></td>
   <td>Orb of Regret</td>
 </tr>

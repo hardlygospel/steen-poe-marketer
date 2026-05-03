@@ -28,9 +28,9 @@
 &nbsp;
 <img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyGemQuality.png" height="36" title="Gemcutter's Prism" alt="Gemcutter's Prism">
 &nbsp;
-<img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyCorrupt.png" height="36" title="Vaal Orb" alt="Vaal Orb">
+<img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyVaal.png" height="36" title="Vaal Orb" alt="Vaal Orb">
 &nbsp;
-<img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyAddModToItem.png" height="36" title="Orb of Fusing" alt="Orb of Fusing">
+<img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyRerollSocketLinks.png" height="36" title="Orb of Fusing" alt="Orb of Fusing">
 
 <br><br>
 
@@ -266,7 +266,7 @@ Fuzzy name search across all categories, ranked by price. Also accessible via `-
   <td>Mirror of Kalandra</td>
 </tr>
 <tr>
-  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyAddModToItem.png" height="22" alt="Orb of Fusing"></td>
+  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyRerollSocketLinks.png" height="22" alt="Orb of Fusing"></td>
   <td><code>fuse</code> &nbsp;/&nbsp; <code>fusing</code></td>
   <td>Orb of Fusing</td>
 </tr>
@@ -296,7 +296,7 @@ Fuzzy name search across all categories, ranked by price. Also accessible via `-
   <td>Orb of Annulment</td>
 </tr>
 <tr>
-  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyCorrupt.png" height="22" alt="Vaal Orb"></td>
+  <td align="center"><img src="https://web.poecdn.com/image/Art/2DItems/Currency/CurrencyVaal.png" height="22" alt="Vaal Orb"></td>
   <td><code>vaal</code></td>
   <td>Vaal Orb</td>
 </tr>
